@@ -1,0 +1,127 @@
+import { Router } from 'express'
+import pool from '../db.js'
+import { auth } from '../middleware.js'
+
+const router = Router()
+
+const TIERS = [
+  { id: 'plus', name: 'Plus', price: 299, duration_months: 1, features: ['5 суперлайков в день', 'Без рекламы', 'Кто лайкнул меня'] },
+  { id: 'gold', name: 'Gold', price: 699, duration_months: 1, features: ['10 суперлайков в день', 'Без рекламы', 'Кто лайкнул меня', 'Режим невидимки', 'Приоритетные лайки'] },
+  { id: 'platinum', name: 'Platinum', price: 1499, duration_months: 1, features: ['∞ суперлайков', 'Без рекламы', 'Кто лайкнул меня', 'Режим невидимки', 'Приоритетные лайки', 'Персональный консьерж'] },
+]
+
+router.get('/api/premium/tiers', (req, res) => {
+  res.json(TIERS)
+})
+
+router.get('/api/premium/my', auth, async (req, res) => {
+  try {
+    const [rows] = await pool.query(
+      "SELECT tier, duration_months, price, started_at, expires_at, is_active FROM subscriptions WHERE user_id = ? AND is_active = 1 AND expires_at > NOW() ORDER BY started_at DESC LIMIT 1",
+      [req.userId],
+    )
+    if (rows.length === 0) return res.json(null)
+    res.json(rows[0])
+  } catch (err) {
+    console.error('Premium check error:', err)
+    res.status(500).json({ message: 'Failed to check premium status' })
+  }
+})
+
+const PRICE_IDS = { plus: 'price_plus', gold: 'price_gold', platinum: 'price_platinum' }
+
+router.post('/api/premium/create-checkout', auth, async (req, res) => {
+  const { tier, duration_months } = req.body
+  if (!tier || !duration_months) return res.status(400).json({ message: 'tier and duration_months are required' })
+
+  const tierConfig = TIERS.find(t => t.id === tier)
+  if (!tierConfig) return res.status(400).json({ message: 'Invalid tier' })
+
+  const stripeKey = process.env.STRIPE_SECRET_KEY
+  if (stripeKey) {
+    try {
+      const { default: Stripe } = await import('stripe')
+      const stripe = new Stripe(stripeKey)
+
+      const unitAmount = Math.round(tierConfig.price * duration_months * 100)
+      const session = await stripe.checkout.sessions.create({
+        payment_method_types: ['card'],
+        line_items: [{
+          price_data: {
+            currency: 'rub',
+            product_data: { name: `${tierConfig.name} (${duration_months} мес.)` },
+            unit_amount: unitAmount,
+          },
+          quantity: 1,
+        }],
+        mode: 'payment',
+        success_url: `${req.headers.origin}/premium/success?session_id={CHECKOUT_SESSION_ID}`,
+        cancel_url: `${req.headers.origin}/premium/cancel`,
+        metadata: { userId: String(req.userId), tier, duration_months: String(duration_months) },
+      })
+
+      return res.json({ url: session.url, sessionId: session.id })
+    } catch (err) {
+      console.error('Stripe error, falling back to mock:', err.message)
+    }
+  }
+
+  const price = tierConfig.price * duration_months
+  await pool.query(
+    `INSERT INTO subscriptions (user_id, tier, duration_months, price, expires_at, is_active)
+     VALUES (?, ?, ?, ?, DATE_ADD(NOW(), INTERVAL ? MONTH), 1)`,
+    [req.userId, tier, duration_months, price, duration_months],
+  )
+  res.status(201).json({ message: 'Subscription activated (mock)', tier, expires_at: null })
+})
+
+router.post('/api/premium/cancel', auth, async (req, res) => {
+  try {
+    const [result] = await pool.query(
+      "UPDATE subscriptions SET is_active = 0 WHERE user_id = ? AND is_active = 1 AND expires_at > NOW()",
+      [req.userId],
+    )
+    if (result.affectedRows === 0) return res.status(404).json({ message: 'No active subscription found' })
+    res.json({ message: 'Subscription cancelled' })
+  } catch (err) {
+    console.error('Cancel error:', err)
+    res.status(500).json({ message: 'Failed to cancel subscription' })
+  }
+})
+
+router.post('/api/premium/webhook', (req, res) => {
+  const stripeKey = process.env.STRIPE_SECRET_KEY
+  if (!stripeKey) return res.status(200).json({ received: true })
+
+  const endpointSecret = process.env.STRIPE_WEBHOOK_SECRET
+  const sig = req.headers['stripe-signature']
+  if (!sig || !endpointSecret) return res.status(400).json({ message: 'Missing signature' })
+
+  let event
+  try {
+    const Stripe = require('stripe')
+    const stripe = new Stripe(stripeKey)
+    event = stripe.webhooks.constructEvent(req.body, sig, endpointSecret)
+  } catch (err) {
+    console.error('Webhook signature error:', err)
+    return res.status(400).json({ message: 'Invalid signature' })
+  }
+
+  if (event.type === 'checkout.session.completed') {
+    const session = event.data.object
+    const { userId, tier, duration_months } = session.metadata
+    if (userId && tier) {
+      const tierConfig = TIERS.find(t => t.id === tier)
+      const price = tierConfig ? tierConfig.price * Number(duration_months || 1) : 0
+      pool.query(
+        `INSERT INTO subscriptions (user_id, tier, duration_months, price, expires_at, is_active)
+         VALUES (?, ?, ?, ?, DATE_ADD(NOW(), INTERVAL ? MONTH), 1)`,
+        [Number(userId), tier, Number(duration_months || 1), price, Number(duration_months || 1)],
+      ).catch(err => console.error('Webhook insert error:', err))
+    }
+  }
+
+  res.json({ received: true })
+})
+
+export default router

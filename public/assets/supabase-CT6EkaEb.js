@@ -1,0 +1,1 @@
+import{r as t}from"./rolldown-runtime-M0oDzQ_3.js";var o=t({getSupabase:()=>a}),e=!1;function a(){return e||(e=!0,console.warn("[Supabase] VITE_SUPABASE_URL or VITE_SUPABASE_ANON_KEY not set. Falling back to demo mode. Set these env vars for production.")),null}export{o as n,a as t};

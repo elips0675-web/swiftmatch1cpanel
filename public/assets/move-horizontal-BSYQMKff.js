@@ -1,0 +1,1 @@
+import{t as o}from"./createLucideIcon-DEaeia5K.js";var a=[["path",{d:"m18 8 4 4-4 4",key:"1ak13k"}],["path",{d:"M2 12h20",key:"9i4pu4"}],["path",{d:"m6 8-4 4 4 4",key:"15zrgr"}]],r=o("move-horizontal",a);export{r as t};
