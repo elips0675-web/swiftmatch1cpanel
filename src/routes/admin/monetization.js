@@ -70,6 +70,20 @@ router.put('/monetization/pricing', async (req, res) => {
   }
 })
 
+router.get('/monetization/ads', async (req, res) => {
+  try {
+    const [[row]] = await pool.query("SELECT config_value FROM config WHERE config_key = 'ads' LIMIT 1")
+    if (!row) {
+      return res.json({ google: true, yandex: false, googleId: 'ca-app-pub-3940256099942544/5224354917', yandexId: 'R-M-DEMO-rewarded' })
+    }
+    const config = JSON.parse(row.config_value)
+    res.json(config)
+  } catch (err) {
+    console.error('Get ads error:', err)
+    res.status(500).json({ message: 'Failed to fetch ad config' })
+  }
+})
+
 router.put('/monetization/ads', async (req, res) => {
   const { google, yandex, googleId, yandexId } = req.body
   try {
